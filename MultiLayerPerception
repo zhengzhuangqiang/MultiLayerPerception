@@ -1,0 +1,231 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Apr  6 18:33:58 2018
+
+@author: zheng zhuangqiang
+"""
+
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import OneHotEncoder
+import matplotlib.pyplot as plt
+
+class MyNeutralNet(object):
+    
+    def __init__(self, num_hidden, max_iter=100, learning_rate=1., \
+        batch_size=100, C=0.0, display_interval = 1):
+        
+        self.num_hidden, self.max_iter, self.learning_rate, self.batch_size, \
+            self.C = num_hidden, max_iter, learning_rate, batch_size, C
+        self.display_interval = display_interval
+    
+    def fit(self, features, labels):
+        # 数据预处理
+        features, labels = self.preprocessing(features, labels, train=True)
+        
+        # 建立网络
+        self.num_samples, self.num_input = np.shape(features)
+        _, self.num_output = np.shape(labels)
+        
+        # 参数初始化
+        self.optimal_loss = None
+        theta = self.inference(X=features)
+        
+        # 训练网络
+        summary = {'iter':[], 'loss':[], 'theta':[]}
+        for i in range(self.max_iter):
+            batch_index = self.next_batches()
+            xs, ys = features[batch_index], labels[batch_index]
+            
+            theta = self.update_weight(xs, ys, theta)
+            
+            _, predict_prob = self.inference(xs, theta=theta)
+            loss = self.get_cross_entropy_loss(ys, predict_prob)
+            # 汇总
+            if i % self.display_interval == 0:
+                summary['iter'].append(i+1)
+                summary['loss'].append(loss)
+                summary['theta'].append(theta)
+                if self.optimal_loss is None:
+                    self.optimal_loss, self.optimal_theta = loss, theta
+                elif self.optimal_loss > loss:
+                    self.optimal_loss, self.optimal_theta = loss, theta
+        self.summary = summary
+        del summary
+             
+    def inference(self, X, theta = None, verbose=0):
+        
+        if theta is None:
+            num_input, num_hidden, num_output = self.num_input, self.num_hidden,\
+                self.num_output
+            w1 = np.random.randn(num_input, num_hidden)
+            w1 = w1*np.sqrt(2/(num_input+num_hidden))  #xavier初始化
+            b1 = np.zeros((num_hidden,))
+            
+            w2 = np.random.randn(num_hidden, num_output)
+            w2 = w2*np.sqrt(2/(num_hidden+num_output))
+            b2 = np.zeros((num_output,))
+            
+            theta = [w1, b1, w2, b2]
+            return theta
+        w1, b1, w2, b2 = theta
+        logit1 = np.dot(X, w1) + b1
+        layer1 = self.sigmoid(logit1)
+        logit2 = np.dot(layer1, w2) + b2
+        
+        if self.classification == "multiclass":
+            temp = np.exp(logit2)
+            layer2 = temp/np.sum(temp, axis=1).reshape((-1,1)) #对应Softmax
+        else: #对应multilabel
+            layer2 = self.sigmoid(logit2)
+        if verbose == 1:
+            return logit1, layer1, logit2, layer2
+        return logit2, layer2
+
+    def update_weight(self, xs, ys, theta):
+        """
+            计算迭代一次后的weight
+        """
+        # forward inference
+        a1 = xs
+        z2, a2, z3, a3 = self.inference(xs, theta=theta, verbose=1)
+        # back propagation
+        w1, b1, w2, b2 = theta
+        if self.classification == "multiclass":
+            delta3 = -(ys-a3)
+        else: #'multilabel'
+            delta3 = - (ys*(1-a3)-(1-ys)*a3)
+        delta2 = np.dot(delta3, w2.transpose())*self.sigmoid(z2, derivative=True)
+        
+        b2 = b2 - self.learning_rate*np.mean(delta3, axis=0)
+        w2 = w2 - self.C*2*w2
+        w2 = w2 - self.learning_rate*np.dot(a2.transpose(), delta3)/self.batch_size
+        
+        b1 = b1 - self.learning_rate*np.mean(delta2, axis=0)
+        w1 = w1 - self.C*2*w1
+        w1 = w1 - self.learning_rate*np.dot(a1.transpose(), delta2)/self.batch_size
+        
+        return [w1, b1, w2, b2]
+    
+    def preprocessing(self, features, labels=None, train=False):
+        """
+            对特征进行数据标准化
+            对于labels:如果labels为一维数组，说明为multiclass, 对labels进行one_hot编码
+                       如果labels为二维数组，说明为multilabel，对labels无需进行处理
+        """
+        features = np.array(features, dtype=np.float64)
+        if train == True:
+            self.scaler = scaler = StandardScaler(copy=False, with_mean=True, with_std=True)
+            scaler.fit_transform(features)
+            num_dim = len(np.shape(labels))
+            if num_dim==1:
+                #multiclass classification
+                self.classification = "multiclass"
+                self.one_hot_coder = one_hot_coder = OneHotEncoder(sparse=False)
+                labels = np.reshape(labels, (-1,1))
+                labels = one_hot_coder.fit_transform(labels)
+            else:
+                #multilabel classfication
+                self.classification = "multilabel"  #此时应该使用softmax回归
+            return features, labels
+        else:
+            self.scaler.transform(features)
+            if labels is not None:
+                if self.classification == "multiclass":
+                    labels = np.reshape(labels, (-1,1))
+                    labels = self.one_hot_coder.transform(labels)
+                return features, labels
+            else:
+                return features  
+    
+    def next_batches(self):
+        if self.batch_size >= self.num_samples:
+            return np.arange(0, self.num_samples, 1, dtype=np.int32)
+        index = np.arange(self.num_samples)
+        np.random.shuffle(index)
+        return index[:self.batch_size]
+        
+    def get_cross_entropy_loss(self, labels, predict_prob):
+        if self.classification == "multiclass":
+            loss = -np.sum(labels*np.log(predict_prob))/len(labels)
+        else:
+            loss = -np.sum(labels*np.log(predict_prob)+(1-labels)*np.log(1-predict_prob))/len(labels)
+        return loss
+    
+    def predict_prob(self, X):
+        X = self.preprocessing(X)
+        _, predict_prob = self.inference(X, theta=self.optimal_theta)
+        return predict_prob
+    
+    def predict(self, X):
+        predict_prob = self.predict_prob(X)
+        return np.argmax(predict_prob, axis=1)
+    
+    def evaluate(self, features, labels):
+        if self.classification == "multiclass":
+            predict_labels = self.predict(features)
+            accuracy = np.sum(predict_labels==labels)/len(labels)
+            return accuracy
+        
+    def sigmoid(self, X, derivative=False):
+        if derivative==True:
+            return self.sigmoid(X)*(1-self.sigmoid(X))
+        return 1/(1+np.exp(-X))
+    
+    def visual(self, smoothness_coef=0.01):
+        num_iter = self.summary['iter']
+        loss = self.summary['loss']
+        # 平滑处理
+        interval = max(int(len(loss)*0.1),1)
+        loss = [np.average(loss[max(i-interval,0):(i+1)]) for i,val in enumerate(loss)]
+        plt.plot(num_iter, loss)
+        plt.xlabel('num_iter')
+        plt.ylabel('loss')
+        plt.title('loss change with training steps')
+        
+if __name__ == '__main__':
+    
+    from sklearn import datasets
+    from sklearn.neural_network import MLPClassifier
+    from sklearn.model_selection import KFold
+    iris = datasets.load_iris()
+    features = iris['data']
+    labels = iris['target']
+    """
+    # visual dataset  图一
+    from sklearn.decomposition import PCA
+    pca = PCA(n_components=2,copy=True)
+    features_reduct = pca.fit_transform(features)
+    plt.scatter(features_reduct[labels==0,0], features_reduct[labels==0,1], label = 'setosa')
+    plt.scatter(features_reduct[labels==1,0], features_reduct[labels==1,1], label = 'versicolor')
+    plt.scatter(features_reduct[labels==2,0], features_reduct[labels==2,1], label = 'virginica')
+    plt.legend()
+    plt.title('iris dataset')
+    plt.show()
+    """
+    kfold = KFold(n_splits=3, shuffle=True, random_state=0)
+    
+    import time
+    
+    t1 = time.clock()
+    accuracy = []
+    for train_index, test_index in kfold.split(features, labels):
+        train_features, test_features = features[train_index],features[test_index]
+        train_labels, test_labels = labels[train_index], labels[test_index]
+        
+        # our MLP
+        model = MyNeutralNet(num_hidden=100, max_iter=100, learning_rate=10, \
+            batch_size=100, C=1e-5, display_interval=1)
+        # sklearn自带的MLP做对比验证代码准确性
+        #model = MLPClassifier(hidden_layer_sizes=(100,), max_iter=200, alpha=0.0001)
+        model.fit(train_features, train_labels)
+        
+        predict_labels = model.predict(test_features)
+        acc = np.mean(predict_labels == test_labels)
+        #acc = model.evaluate(test_features, test_labels)
+        accuracy.append(acc)
+    t2 = time.clock()
+    print("elapsed time:%.4fs" % (t2-t1))
+    print("10 fold cross validation accuracy:%.4f" % np.mean(accuracy))
+
+    
